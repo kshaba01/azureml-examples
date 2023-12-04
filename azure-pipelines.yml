@@ -1,0 +1,72 @@
+name: submit-azure-machine-learning-job
+
+trigger:
+- none
+
+variables:
+  subscription_id: 'b7de9509-1373-4101-944f-63906bd9a789' # replace with your subscription id
+  service-connection: 'mlops-service-connection' # replace with your generic service connection name
+  resource-group: 'mlops' # replace with your resource group name
+  workspace: 'mlops-sandbox' # replace with your workspace name
+
+jobs:
+- job: SubmitAzureMLJob
+  displayName: Submit AzureML Job
+  timeoutInMinutes: 300
+  pool:
+    vmImage: ubuntu-latest
+  steps:
+  - checkout: none
+  - task: UsePythonVersion@0
+    displayName: Use Python >=3.8
+    inputs:
+      versionSpec: '>=3.8'
+
+  - bash: |
+      set -ex
+
+      az version
+      az extension add -n ml
+      az login --identity
+      az account set --subscription $(subscription_id)
+
+    displayName: 'Add AzureML Extension and get identity'
+
+  - task: AzureCLI@2
+    name: submit_azureml_job_task
+    displayName: Submit AzureML Job Task
+    inputs:
+      workingDirectory: 'cli/jobs/pipelines-with-components/nyc_taxi_data_regression'
+      scriptLocation: inlineScript
+      scriptType: bash
+      inlineScript: |
+      
+      # submit component job and get the run name
+      job_name=$(az ml job create --file single-job-pipeline.yml -g $(resource-group) -w $(workspace) --query name --output tsv)
+
+
+      # Set output variable for next task
+      echo "##vso[task.setvariable variable=JOB_NAME;isOutput=true;]$job_name"
+
+      # Get a bearer token to authenticate the request in the next job
+      export aadToken=$(az account get-access-token --resource=https://management.azure.com --query accessToken -o tsv)
+      echo "##vso[task.setvariable variable=AAD_TOKEN;isOutput=true;issecret=true]$aadToken"
+
+- job: WaitForJobCompletion
+  displayName: Wait for AzureML Job Completion
+  pool: server
+  timeoutInMinutes: 0
+  dependsOn: SubmitAzureMLJob
+  variables: 
+    job_name_from_submit_task: $[ dependencies.SubmitAzureMLJob.outputs['submit_azureml_job_task.JOB_NAME'] ] 
+    AAD_TOKEN: $[ dependencies.SubmitAzureMLJob.outputs['submit_azureml_job_task.AAD_TOKEN'] ]
+  steps:
+  - task: InvokeRESTAPI@1
+    inputs:
+      connectionType: connectedServiceName
+      serviceConnection: $(service-connection)
+      method: PATCH
+      body: "{ \"Properties\": { \"NotificationSetting\": { \"Webhooks\": { \"ADO_Webhook_$(system.TimelineId)\": { \"WebhookType\": \"AzureDevOps\", \"EventType\": \"RunTerminated\", \"PlanUri\": \"$(system.CollectionUri)\", \"ProjectId\": \"$(system.teamProjectId)\", \"HubName\": \"$(system.HostType)\", \"PlanId\": \"$(system.planId)\", \"JobId\": \"$(system.jobId)\", \"TimelineId\": \"$(system.TimelineId)\", \"TaskInstanceId\": \"$(system.TaskInstanceId)\", \"AuthToken\": \"$(system.AccessToken)\"}}}}}"
+      headers: "{\n\"Content-Type\":\"application/json\", \n\"Authorization\":\"Bearer $(AAD_TOKEN)\" \n}"
+      urlSuffix: "subscriptions/$(subscription_id)/resourceGroups/$(resource-group)/providers/Microsoft.MachineLearningServices/workspaces/$(workspace)/jobs/$(job_name_from_submit_task)?api-version=2023-04-01-preview"
+      waitForCompletion: "true"
