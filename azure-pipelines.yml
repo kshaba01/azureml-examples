@@ -49,8 +49,8 @@ jobs:
       echo "##vso[task.setvariable variable=JOB_NAME;isOutput=true;]$job_name"
 
       # Get a bearer token to authenticate the request in the next job
-      export aadToken=$(az account get-access-token --resource=https://management.azure.com --query accessToken -o tsv)
-      echo "##vso[task.setvariable variable=AAD_TOKEN;isOutput=true;issecret=true]$aadToken"
+      'export aadToken=$(az account get-access-token --resource=https://management.azure.com --query accessToken -o tsv)'
+      'echo "##vso[task.setvariable variable=AAD_TOKEN;isOutput=true;issecret=true]$aadToken"'
 - job: WaitForJobCompletion
   displayName: Wait for AzureML Job Completion
   pool: server
